@@ -9,9 +9,10 @@ import "./OGTokenInterface.sol";
 import "./StakingFactoryInterface.sol";
 import "./Owned.sol";
 import "./InterestUtils.sol";
+import "./CurveInterface.sol";
 
 // SPDX-License-Identifier: GPLv2
-contract Staking is ERC20, Owned {
+contract Staking is ERC20, Owned, InterestUtils {
     using SafeMath for uint;
 
     // Token { dataType 1, address tokenAddress }
@@ -32,7 +33,7 @@ contract Staking is ERC20, Owned {
         uint64 duration;
         uint64 end;
         uint64 index;
-        uint64 rate; // max 18_446744073_709551615 = 1800%
+        uint rate; // max uint64 = 18_446744073_709551615 = 1800%
         uint balance;
     }
 
@@ -45,6 +46,7 @@ contract Staking is ERC20, Owned {
 
     uint public id;
     OGTokenInterface public ogToken;
+    CurveInterface public stakingRewardCurve;
     StakingInfo public stakingInfo;
 
     uint _totalSupply;
@@ -56,9 +58,6 @@ contract Staking is ERC20, Owned {
     // uint public weightedDurationDenominator;
     uint public slashingFactor;
 
-    uint public rewardsPerSecond = 150_000_000_000_000_000; // 0.15
-    uint public rewardsPerYear;
-
     event Staked(address indexed tokenOwner, uint tokens, uint duration, uint end);
     event Unstaked(address indexed tokenOwner, uint tokens, uint reward, uint tokensWithSlashingFactor, uint rewardWithSlashingFactor);
     event Slashed(uint slashingFactor, uint tokensBurnt);
@@ -69,13 +68,12 @@ contract Staking is ERC20, Owned {
         initOwned(msg.sender);
         id = _id;
         ogToken = _ogToken;
+        stakingRewardCurve = CurveInterface(0);
         stakingInfo = StakingInfo(dataType, addresses, uints, strings[0], strings[1], strings[2], strings[3]);
-        // rewardsPerYear = 15 * 10**16; // 15%
-        rewardsPerYear = 365 days * 10**10; // 31.536% compounding daily/simple partial end, or rewardsPerSecond: 0.000001%
     }
 
     function symbol() override external view returns (string memory _symbol) {
-        bytes memory b = new bytes(20);
+        bytes memory b = new bytes(7 + SYMBOLPREFIX.length);
         uint i;
         uint j;
         uint num;
@@ -137,6 +135,24 @@ contract Staking is ERC20, Owned {
         return allowed[tokenOwner][spender];
     }
 
+    function _getRate(uint term) internal view returns (uint rate) {
+        if (stakingRewardCurve == CurveInterface(0)) {
+            try StakingFactoryInterface(owner).getStakingRewardCurve().getRate(term) returns (uint _rate) {
+                rate = _rate;
+            } catch {
+                rate = 0;
+            }
+        } else {
+            try stakingRewardCurve.getRate(term) returns (uint _rate) {
+                rate = _rate;
+            } catch {
+                rate = 0;
+            }
+        }
+    }
+    function getRate(uint term) external view returns (uint rate) {
+        rate = _getRate(term);
+    }
     function getStakingInfo() public view returns (uint dataType, address[4] memory addresses, uint[6] memory uints, string memory string0, string memory string1, string memory string2, string memory string3) {
         (dataType, addresses, uints) = (stakingInfo.dataType, stakingInfo.addresses, stakingInfo.uints);
         string0 = stakingInfo.string0;
@@ -207,7 +223,7 @@ contract Staking is ERC20, Owned {
     function _calculateReward(Account memory account, address /*tokenOwner*/, uint tokens) internal view returns (uint _reward, uint _term) {
         // console.log("        >     _calculateReward(tokenOwner %s, tokens %s)", tokenOwner, tokens);
         uint from = account.end == 0 ? block.timestamp : uint(account.end).sub(uint(account.duration));
-        uint futureValue = InterestUtils.futureValue(tokens, from, block.timestamp, rewardsPerYear, 1 days);
+        uint futureValue = InterestUtils.futureValue(tokens, from, block.timestamp, account.rate);
         // console.log("        > _calculateReward(%s) - tokens %s, rate %s", tokenOwner, tokens, rewardsPerYear);
         // console.log("          from %s, to %s, futureValue %s", from, block.timestamp, futureValue);
         _reward = futureValue.sub(tokens);
@@ -249,7 +265,8 @@ contract Staking is ERC20, Owned {
         }
         if (depositTokens == 0 && withdrawTokens == 0 || depositTokens > 0) {
             if (account.end == 0) {
-                accounts[tokenOwner] = Account(uint64(duration), uint64(block.timestamp.add(duration)), uint64(accountsIndex.length), uint64(rewardsPerYear), depositTokens);
+                uint rate = _getRate(duration);
+                accounts[tokenOwner] = Account(uint64(duration), uint64(block.timestamp.add(duration)), uint64(accountsIndex.length), rate, depositTokens);
                 account = accounts[tokenOwner];
                 accountsIndex.push(tokenOwner);
                 emit Staked(tokenOwner, depositTokens, duration, account.end);
@@ -257,6 +274,7 @@ contract Staking is ERC20, Owned {
                 require(block.timestamp + duration >= account.end, "Cannot shorten duration");
                 account.duration = uint64(duration);
                 account.end = uint64(block.timestamp.add(duration));
+                account.rate = _getRate(duration);
                 account.balance = account.balance.add(depositTokens);
             }
             if (depositTokens > 0) {

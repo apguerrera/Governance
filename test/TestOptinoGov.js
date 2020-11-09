@@ -1,4 +1,4 @@
-const { ZERO_ADDRESS, Data } = require('./helpers/common');
+const { ZERO_ADDRESS, SECONDS_PER_DAY, SECONDS_PER_YEAR, Data } = require('./helpers/common');
 const { expect } = require("chai");
 const { BigNumber } = require("ethers");
 const util = require('util');
@@ -10,14 +10,12 @@ let TestToken;
 let OptinoGov;
 let data;
 const verbose = false;
-const SECONDS_PER_DAY = 24 * 60 * 60;
-const SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
 
 describe("TestOptinoGov", function() {
   beforeEach("Setup", async function() {
-    SimpleCurve = await ethers.getContractFactory("SimpleCurve");
     OGToken = await ethers.getContractFactory("OGToken");
     OGDToken = await ethers.getContractFactory("OGDToken");
+    SimpleCurve = await ethers.getContractFactory("SimpleCurve");
     TestToken = await ethers.getContractFactory("TestToken");
     OptinoGov = await ethers.getContractFactory("OptinoGov");
     data = new Data();
@@ -26,24 +24,24 @@ describe("TestOptinoGov", function() {
     console.log("        --- Setup 1 - Deploy OGToken, OGDToken, FEE0, then OptinoGov ---");
     const setup1a = [];
     const mintOGTokens = ethers.utils.parseUnits("40000", 18);
-    // const mintOGTokens = ethers.utils.parseUnits("10000", 18);
-    // const mintFee0Tokens = ethers.utils.parseUnits("100", 18);
-    const mintFee0Tokens = ethers.utils.parseUnits("0", 18);
-    // let terms = [2, 5, 10, 100];
-    // let rates = [ethers.utils.parseUnits("20", 16), ethers.utils.parseUnits("50", 16), ethers.utils.parseUnits("100", 16), ethers.utils.parseUnits("1000", 16)];
-    let terms = [SECONDS_PER_DAY, SECONDS_PER_YEAR, 2 * SECONDS_PER_YEAR];
-    let rates = [BigNumber.from(SECONDS_PER_YEAR).mul(BigNumber.from(10).pow(10)), BigNumber.from(2 * SECONDS_PER_YEAR).mul(BigNumber.from(10).pow(10)), BigNumber.from(3 * SECONDS_PER_YEAR).mul(BigNumber.from(10).pow(10))];
+    const mintFee0Tokens = ethers.utils.parseUnits("100", 18);
+    let ogRewardTerms = [SECONDS_PER_DAY, SECONDS_PER_YEAR, 2 * SECONDS_PER_YEAR];
+    let ogRewardRates = [BigNumber.from(SECONDS_PER_YEAR).mul(BigNumber.from(10).pow(10)), BigNumber.from(2 * SECONDS_PER_YEAR).mul(BigNumber.from(10).pow(10)), BigNumber.from(3 * SECONDS_PER_YEAR).mul(BigNumber.from(10).pow(10))];
+    let voteWeightTerms = [SECONDS_PER_DAY, 3 * SECONDS_PER_YEAR];
+    let voteWeightRates = [BigNumber.from("1").mul(BigNumber.from(10).pow(16)), BigNumber.from("365").mul(3).mul(BigNumber.from(10).pow(16))];
     setup1a.push(OGToken.deploy("OG", "Optino Governance", 18, data.owner, mintOGTokens));
     setup1a.push(OGDToken.deploy("OGD", "Optino Governance Dividend", 18, data.owner, ethers.utils.parseUnits("0", 18)));
-    setup1a.push(SimpleCurve.deploy(terms, rates));
+    setup1a.push(SimpleCurve.deploy(ogRewardTerms, ogRewardRates));
+    setup1a.push(SimpleCurve.deploy(voteWeightTerms, voteWeightRates));
     setup1a.push(TestToken.deploy("FEE0", "Fee0", 18, data.owner, mintFee0Tokens));
-    const [ogToken, ogdToken, ogRewardCurve, fee0Token] = await Promise.all(setup1a);
+    const [ogToken, ogdToken, ogRewardCurve, voteWeightCurve, fee0Token] = await Promise.all(setup1a);
     const setup1b = [];
-    const optinoGov = await OptinoGov.deploy(ogToken.address, ogdToken.address, ogRewardCurve.address);
-    await data.setOptinoGovData(ogToken, ogdToken, ogRewardCurve, optinoGov, fee0Token);
+    const optinoGov = await OptinoGov.deploy(ogToken.address, ogdToken.address, ogRewardCurve.address, voteWeightCurve.address);
+    await data.setOptinoGovData(ogToken, ogdToken, ogRewardCurve, voteWeightCurve, optinoGov, fee0Token);
     await data.printTxData("ogToken.deployTransaction", ogToken.deployTransaction);
     await data.printTxData("ogdToken.deployTransaction", ogdToken.deployTransaction);
     await data.printTxData("ogRewardCurve.deployTransaction", ogRewardCurve.deployTransaction);
+    await data.printTxData("voteWeightCurve.deployTransaction", voteWeightCurve.deployTransaction);
     await data.printTxData("fee0Token.deployTransaction", fee0Token.deployTransaction);
     await data.printTxData("optinoGov.deployTransaction", optinoGov.deployTransaction);
     if (verbose) {
@@ -126,25 +124,23 @@ describe("TestOptinoGov", function() {
       await data.printTxData("commit4", commit4);
       await data.printBalances();
 
-      console.log("        --- Test 4 - User1 collecting rewards, user2 collecting and committing rewards leaving duration unchanged, user3 collecting and committing rewards and extending duration ---");
+      console.log("        --- Test 4 - User{1..2} collecting rewards, user3 collecting and committing rewards and extending duration to 1d ---");
       const test4 = [];
-      test4.push(data.optinoGov.connect(data.user1Signer).collectReward(false, 0));
-      test4.push(data.optinoGov.connect(data.user2Signer).collectReward(true, 0));
-      test4.push(data.optinoGov.connect(data.user3Signer).collectReward(true, 5000));
+      test4.push(data.optinoGov.connect(data.user1Signer).recommit(0));
+      test4.push(data.optinoGov.connect(data.user2Signer).recommit(0));
+      test4.push(data.optinoGov.connect(data.user3Signer).recommit(SECONDS_PER_DAY));
       const [collectReward1, collectReward2, collectReward3] = await Promise.all(test4);
       await data.printTxData("collectReward1", collectReward1);
       await data.printTxData("collectReward2", collectReward2);
       await data.printTxData("collectReward3", collectReward3);
-      if (verbose) {
-        await data.printBalances();
-      }
+      await data.printBalances();
 
-      console.log("        --- Test 5 - Owner collecting rewards on behalf of user1 for a % fee ---");
+      await console.log("        --- Test 5 - Owner uncommitFor(user1) for a % fee ---");
       data.pause("Waiting", 5);
       const test5 = [];
-      test5.push(data.optinoGov.collectRewardFor(data.user1));
-      const [collectRewardFor1] = await Promise.all(test5);
-      await data.printTxData("collectRewardFor1", collectRewardFor1);
+      test5.push(data.optinoGov.uncommitFor(data.user1));
+      const [uncommitFor1] = await Promise.all(test5);
+      await data.printTxData("uncommitFor1", uncommitFor1);
       await data.printBalances();
 
       console.log("        --- Test 6 - Owner deposits dividends of 10 ETH and 100 FEE ---");
@@ -156,9 +152,7 @@ describe("TestOptinoGov", function() {
       const [depositDividendFee1, depositDividendFee2] = await Promise.all(test6);
       await data.printTxData("depositDividendFee1", depositDividendFee1);
       await data.printTxData("depositDividendFee2", depositDividendFee2);
-      if (verbose) {
-        await data.printBalances();
-      }
+      await data.printBalances();
 
       console.log("        --- Test 7 - User{1..3} withdraw ETH and FEE dividends ---");
       const test7 = [];
@@ -177,20 +171,6 @@ describe("TestOptinoGov", function() {
       // const user1Fee1Balance = await fee1Token.balanceOf(data.user1);
       // console.log("user1Fee1Balance: " + user1Fee1Balance);
       // expect(ethers.utils.parseUnits(user1Fee1Balance.toString())).to.equal(ethers.utils.parseUnits("333.333333333333333333", 18));
-
-      // const Greeter = await ethers.getContractFactory("Greeter");
-      // const greeter = await Greeter.deploy("Hello, world!");
-      //
-      // await greeter.deployed();
-      // expect(await greeter.greet()).to.equal("Hello, world!");
-      //
-      // await greeter.setGreeting("Hola, mundo!");
-      // // await greeter.connect(data.user1).setGreeting("Hola, mundo!");
-      // expect(await greeter.greet()).to.equal("Hola, mundo!");
-
-      // await ethers.provider.getLogs({}).then((data) => {
-      //   console.log("getLogs: " + util.inspect(data));
-      // });
     });
   });
 
